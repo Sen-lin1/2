@@ -2,7 +2,6 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import joblib
-from io import BytesIO
 import datetime
 import warnings
 
@@ -72,39 +71,33 @@ st.markdown("""
 
 
 # ==========================================
-# 2. 集成模型类定义 (已修复类型错误)
+# 2. 集成模型类 (保留智能匹配逻辑)
 # ==========================================
 
 class EFTMEnsembleModel:
     def __init__(self):
-        # 定义权重
         self.weights = {
-            'cb': 0.385412,
-            'xgb': 0.294103,
-            'lgbm': 0.211438,
-            'ab': 0.109047
+            'cb': 0.385412, 'xgb': 0.294103, 'lgbm': 0.211438, 'ab': 0.109047
         }
         self.models = {}
-        self.feature_names = None
+        self.feature_names = []
 
     def load_models(self):
-        """加载四个单独的模型文件"""
+        """加载模型并清洗特征名"""
         try:
             self.models['cb'] = joblib.load("model_cb.pkl")
             self.models['xgb'] = joblib.load("model_xgb.pkl")
             self.models['lgbm'] = joblib.load("model_lgbm.pkl")
             self.models['ab'] = joblib.load("model_ab.pkl")
 
-            # 尝试从其中一个模型获取特征名称，用于对齐列顺序
-            # 优先尝试 LGBM 或 XGB，它们通常保留了 feature_names_in_
+            # 获取特征名，去空格并转字符串
             for m_name in ['lgbm', 'xgb', 'ab', 'cb']:
                 model = self.models[m_name]
                 if hasattr(model, 'feature_names_in_'):
-                    # 【关键修复】确保特征名是纯 Python 字符串列表，而不是 numpy.str_
-                    self.feature_names = [str(x) for x in model.feature_names_in_]
+                    self.feature_names = [str(x).strip() for x in model.feature_names_in_]
                     break
-                elif hasattr(model, 'feature_name'):  # Booster case
-                    self.feature_names = [str(x) for x in model.feature_name()]
+                elif hasattr(model, 'feature_name'):
+                    self.feature_names = [str(x).strip() for x in model.feature_name()]
                     break
 
             return True, "所有模型加载成功"
@@ -113,36 +106,36 @@ class EFTMEnsembleModel:
 
     def predict(self, input_df):
         """
-        执行加权预测
-        input_df: 包含中文列名的 DataFrame
+        执行预测 (自动匹配列名)
         """
-        # =======================================================
-        # 【关键修复】强制转换列名为标准字符串，解决混合类型错误
-        # =======================================================
+        # 1. 建立映射：小写列名 -> 原始列名
         input_df.columns = input_df.columns.astype(str)
+        input_map = {col.strip().lower(): col for col in input_df.columns}
 
-        # 1. 特征对齐 (如果模型里保存了特征名，确保输入顺序一致)
-        if self.feature_names is not None:
-            # 找出缺失的列（主要是时间特征可能命名不一致，或模型有额外特征）
-            for col in self.feature_names:
-                if col not in input_df.columns:
-                    # 如果是时间相关的列缺失，尝试用常见的默认值或 0
-                    input_df[col] = 0
+        # 2. 构建符合模型顺序的数据
+        final_df = pd.DataFrame()
 
-            # 严格按照模型训练时的列顺序重排
-            input_df = input_df[self.feature_names]
+        if self.feature_names:
+            for req_col in self.feature_names:
+                req_lower = str(req_col).strip().lower()
 
-        # 再次确保重排后的 DataFrame 列名也是纯字符串（双重保险）
-        input_df.columns = input_df.columns.astype(str)
+                if req_lower in input_map:
+                    # 匹配成功：取对应数据
+                    original_col = input_map[req_lower]
+                    final_df[req_col] = input_df[original_col].values
+                else:
+                    # 匹配失败：填0 (静默处理)
+                    final_df[req_col] = 0.0
+        else:
+            final_df = input_df.copy()
 
-        # 2. 分别预测
+        # 3. 预测与加权
         try:
-            pred_cb = self.models['cb'].predict(input_df)[0]
-            pred_xgb = self.models['xgb'].predict(input_df)[0]
-            pred_lgbm = self.models['lgbm'].predict(input_df)[0]
-            pred_ab = self.models['ab'].predict(input_df)[0]
+            pred_cb = self.models['cb'].predict(final_df)[0]
+            pred_xgb = self.models['xgb'].predict(final_df)[0]
+            pred_lgbm = self.models['lgbm'].predict(final_df)[0]
+            pred_ab = self.models['ab'].predict(final_df)[0]
 
-            # 3. 加权求和
             final_pred = (
                     pred_cb * self.weights['cb'] +
                     pred_xgb * self.weights['xgb'] +
@@ -151,13 +144,10 @@ class EFTMEnsembleModel:
             )
             return final_pred
         except Exception as e:
-            # 打印错误详情到后台以便调试
-            import traceback
-            traceback.print_exc()
-            raise RuntimeError(f"预测计算时发生错误: {str(e)}")
+            raise RuntimeError(f"模型计算错误: {str(e)}")
 
 
-# 初始化并加载模型
+# 初始化
 ensemble = EFTMEnsembleModel()
 status, msg = ensemble.load_models()
 
@@ -165,20 +155,16 @@ status, msg = ensemble.load_models()
 # 3. 界面逻辑
 # ==========================================
 
-st.title("🔬 污水处理出水指标预测 (EFTM)")
+st.title("🔬 污水厂AAO工艺智能预测系统 ")
 st.markdown("基于 **CatBoost, XGBoost, LightGBM, AdaBoost** 集成模型预测。")
 
 if not status:
-    st.error(f"⚠️ 模型加载失败: {msg}\n\n请确保目录中包含 model_cb.pkl, model_xgb.pkl, model_lgbm.pkl, model_ab.pkl")
+    st.error(f"⚠️ 模型加载失败: {msg}")
 
-# --- 表单输入区域 ---
+# --- 表单输入 ---
 with st.form("prediction_form"):
-    # -------------------------------------------------------
-    # 1. 进水与时间 (Inflow & Time)
-    # -------------------------------------------------------
     st.markdown("### 1. 进水与时间 (Inflow & Time)")
     col1, col2, col3 = st.columns(3)
-
     with col1:
         date_input = st.date_input("📅 日期 (Date)", datetime.date.today())
     with col2:
@@ -186,12 +172,8 @@ with st.form("prediction_form"):
     with col3:
         inflow = st.number_input("💧 进水量 (m³)", value=1117.0, step=10.0, format="%.1f")
 
-    # -------------------------------------------------------
-    # 2. 厌氧区 (Anaerobic Zone)
-    # -------------------------------------------------------
     st.markdown("### 2. 厌氧区 (Anaerobic Zone)")
     c1, c2, c3 = st.columns(3)
-
     with c1:
         ana_do_n = st.number_input("厌氧池北溶解氧 (DO)", value=0.20, step=0.01, format="%.2f")
     with c2:
@@ -199,17 +181,10 @@ with st.form("prediction_form"):
     with c3:
         ana_orp_n = st.number_input("厌氧池北 ORP", value=-461.5, step=1.0, format="%.1f")
 
-    # -------------------------------------------------------
-    # 3. 缺氧区 (Anoxic Zone)
-    # -------------------------------------------------------
     st.markdown("### 3. 缺氧区 (Anoxic Zone)")
     anox_ss_s = st.number_input("🧪 缺氧池南污泥浓度 (MLSS)", value=3408.0, step=10.0, format="%.1f")
 
-    # -------------------------------------------------------
-    # 4. 好氧区 (Aerobic Zone)
-    # -------------------------------------------------------
     st.markdown("### 4. 好氧区 (Aerobic Zone)")
-
     ac1, ac2, ac3, ac4 = st.columns(4)
     with ac1:
         aero_do_s = st.number_input("好氧南 DO", value=1.11, step=0.01)
@@ -221,8 +196,9 @@ with st.form("prediction_form"):
         aero_orp_n = st.number_input("好氧北 ORP", value=155.5, step=1.0)
         aero_ph_s = st.number_input("好氧南 pH", value=6.9, step=0.1)
     with ac4:
-        aero_do_n = st.number_input("好氧北 DO", value=1.85, step=0.01)
+        # 已移除好氧北DO输入框
         aero_ph_n = st.number_input("好氧北 pH", value=6.9, step=0.1)
+        st.write("")
 
     submit_btn = st.form_submit_button("🔍 开始预测 (Predict)")
 
@@ -231,16 +207,22 @@ with st.form("prediction_form"):
 # ==========================================
 
 if submit_btn and status:
-    # --- A. 时间特征编码 ---
+    # --- A. 时间特征编码 (Sin/Cos) ---
     feat_month = date_input.month
     feat_hour = time_input.hour
     feat_day = date_input.day
-    feat_weekday = date_input.weekday()  # 0=Monday, 6=Sunday
 
-    # --- B. 构建 DataFrame 并使用中文列名 ---
-    # 这里的 Key 必须与模型训练时的列名完全一致
+    month_sin = np.sin(2 * np.pi * feat_month / 12.0)
+    month_cos = np.cos(2 * np.pi * feat_month / 12.0)
+    day_sin = np.sin(2 * np.pi * feat_day / 31.0)
+    day_cos = np.cos(2 * np.pi * feat_day / 31.0)
+    hour_sin = np.sin(2 * np.pi * feat_hour / 24.0)
+    hour_cos = np.cos(2 * np.pi * feat_hour / 24.0)
+
+    # --- B. 构建 DataFrame ---
+    # 包含了常见的命名格式，配合类的自动匹配功能
     data_dict = {
-        # 1. 传感器数据 (Sensor Data)
+        # 传感器
         "进水量": [inflow],
         "厌氧池北溶解氧": [ana_do_n],
         "厌氧池南ORP": [ana_orp_s],
@@ -251,45 +233,46 @@ if submit_btn and status:
         "好氧池北ORP": [aero_orp_n],
         "好氧池南污泥浓度": [aero_ss_s],
         "好氧池北污泥浓度": [aero_ss_n],
-        "好氧池南PH": [aero_ph_s],  # 注意大小写，根据经验 PH 常见大写
+        "好氧池南PH": [aero_ph_s],
         "好氧池北PH": [aero_ph_n],
-        "好氧池北溶解氧": [aero_do_n],
 
-        # 2. 时间特征 (Time Features)
-        # 提供多种常见格式以匹配不同模型需求
-        "Month": [feat_month],
-        "Hour": [feat_hour],
-        "Day": [feat_day],
-        "Weekday": [feat_weekday],
-        "month": [feat_month],
-        "hour": [feat_hour]
+        # 时间特征
+        "month_sin": [month_sin], "Month_sin": [month_sin],
+        "month_cos": [month_cos], "Month_cos": [month_cos],
+        "day_sin": [day_sin], "Day_sin": [day_sin],
+        "day_cos": [day_cos], "Day_cos": [day_cos],
+        "hour_sin": [hour_sin], "Hour_sin": [hour_sin],
+        "hour_cos": [hour_cos], "Hour_cos": [hour_cos]
     }
 
     input_df = pd.DataFrame(data_dict)
 
     try:
-        # 调用集成模型进行预测
+        # 调用预测
         prediction = ensemble.predict(input_df)
 
-        # 显示结果
+        # 1. 显示结果
         st.markdown(f"""
         <div class="result-box">
-            <div>加权预测出水指标 / Weighted Prediction</div>
-            <div class="result-value">{prediction:.4f}</div>
+            <div style="color: #455a64; font-size: 1.1rem;">预测结果：好氧池北溶解氧 (Aerobic North DO)</div>
+            <div class="result-value">{prediction:.4f} <span style="font-size:1rem; color:#666;">mg/L</span></div>
         </div>
         """, unsafe_allow_html=True)
 
-        # 导出 CSV
+        # 2. 导出 CSV
         export_df = input_df.copy()
-        export_df['Prediction_Result'] = prediction
+        export_df['Predicted_Aerobic_North_DO'] = prediction
+        # 只保留第一列同名列，避免导出时有重复的 Month_sin 等
+        export_df = export_df.loc[:, ~export_df.columns.duplicated()]
+
         csv = export_df.to_csv(index=False).encode('utf-8-sig')
 
         st.download_button(
             "📥 导出结果 (Download CSV)",
             csv,
-            "EFTM_ensemble_prediction.csv",
+            "prediction_aerobic_north_do.csv",
             "text/csv"
         )
 
     except Exception as e:
-        st.error(f"预测过程中发生错误: {e}")
+        st.error(f"预测错误: {e}")
