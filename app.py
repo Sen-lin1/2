@@ -81,7 +81,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 自定义 CSS 样式 (修改版：Arial + 加粗)
+# 自定义 CSS 样式
 st.markdown("""
     <style>
     /* 全局字体设置为 Arial */
@@ -94,7 +94,7 @@ st.markdown("""
         max-width: 750px;
         margin: auto;
         background-color: #eef6ff;
-        padding: 1rem 2rem 3rem 2rem;
+        padding: 1rem 1.5rem 2rem 1.5rem;
         font-family: 'Arial', sans-serif;
         font-weight: bold; /* 全局加粗 */
     }
@@ -104,21 +104,43 @@ st.markdown("""
         font-weight: bold !important;
     }
 
-    /* 标题样式 */
+    /* 大标题：小三(15pt) + 居中 */
     h1 {
         color: #1565c0;
-        font-weight: 900 !important; /* 特粗 */
-        font-size: 2.2rem;
+        font-weight: 900 !important;
+        font-size: 15pt;            /* 小三≈15pt */
         font-family: 'Arial', sans-serif;
+        text-align: center;
+        width: 100%;
+        margin-bottom: 0.35rem !important;
     }
+
+    /* 小标题：减少模块间留白 */
     .stMarkdown h3 {
         color: #0d47a1;
         border-bottom: 2px solid #90caf9;
-        padding-bottom: 0.3rem;
-        margin-top: 2rem;
+        padding-bottom: 0.2rem;
+        margin-top: 0.55rem !important;
+        margin-bottom: 0.25rem !important;
         font-size: 1.3rem;
         font-weight: 800 !important;
         font-family: 'Arial', sans-serif;
+    }
+
+    /* Markdown 容器默认底部留白压缩 */
+    div[data-testid="stMarkdownContainer"] {
+        margin-bottom: 0.25rem !important;
+    }
+
+    /* 表单内部纵向元素间距 */
+    div[data-testid="stForm"] [data-testid="stVerticalBlock"] {
+        gap: 0.35rem !important;
+    }
+
+    /* 组件整体底部留白压缩 */
+    div[data-testid="stWidget"] {
+        margin-bottom: 0.15rem !important;
+        padding-bottom: 0.0rem !important;
     }
 
     /* 按钮样式 */
@@ -131,7 +153,7 @@ st.markdown("""
         border-radius: 8px;
         border: none;
         width: 100%;
-        margin-top: 1rem;
+        margin-top: 0.75rem;
         transition: all 0.3s;
         font-family: 'Arial', sans-serif;
     }
@@ -146,7 +168,7 @@ st.markdown("""
         padding: 1.5rem;
         border-radius: 10px;
         text-align: center;
-        margin-top: 1.5rem;
+        margin-top: 1.2rem;
     }
     .result-value {
         font-size: 2rem;
@@ -180,11 +202,21 @@ with col_lang:
 current_lang = "cn" if lang_option == "中文" else "en"
 t = TRANSLATIONS[current_lang]
 
+# ✅ 仅英文标题：调小 + 强制一行（其余不变）
+if current_lang == "en":
+    st.markdown("""
+    <style>
+      h1{
+        font-size: 25pt !important;     /* 更小一点 */
+        white-space: nowrap !important; /* 强制一行 */
+        line-height: 1.1 !important;
+      }
+    </style>
+    """, unsafe_allow_html=True)
 
 # ==========================================
 # 2. 集成模型类 (保留核心逻辑)
 # ==========================================
-
 class EFTMEnsembleModel:
     def __init__(self):
         self.weights = {
@@ -231,11 +263,9 @@ class EFTMEnsembleModel:
                 req_lower = str(req_col).strip().lower()
 
                 if req_lower in input_map:
-                    # 匹配成功：取对应数据
                     original_col = input_map[req_lower]
                     final_df[req_col] = input_df[original_col].values
                 else:
-                    # 匹配失败：填0 (静默处理)
                     final_df[req_col] = 0.0
         else:
             final_df = input_df.copy()
@@ -248,15 +278,14 @@ class EFTMEnsembleModel:
             pred_ab = self.models['ab'].predict(final_df)[0]
 
             final_pred = (
-                    pred_cb * self.weights['cb'] +
-                    pred_xgb * self.weights['xgb'] +
-                    pred_lgbm * self.weights['lgbm'] +
-                    pred_ab * self.weights['ab']
+                pred_cb * self.weights['cb'] +
+                pred_xgb * self.weights['xgb'] +
+                pred_lgbm * self.weights['lgbm'] +
+                pred_ab * self.weights['ab']
             )
             return final_pred
         except Exception as e:
             raise RuntimeError(f"Calculation Error: {str(e)}")
-
 
 # 初始化
 ensemble = EFTMEnsembleModel()
@@ -265,12 +294,11 @@ status, msg = ensemble.load_models()
 # ==========================================
 # 3. 界面逻辑
 # ==========================================
-
 st.title(t["main_title"])
-st.markdown(t["sub_title"])
+# ✅ 已按要求：删除这句话（副标题不再显示）
+# st.markdown(t["sub_title"])
 
 if not status:
-    # 错误信息显示
     st.error(f"{t['load_fail']} {msg}")
 
 # --- 表单输入 ---
@@ -316,7 +344,6 @@ with st.form("prediction_form"):
 # ==========================================
 # 4. 预测与结果处理
 # ==========================================
-
 if submit_btn and status:
     # --- A. 时间特征编码 (Sin/Cos) ---
     feat_month = date_input.month
@@ -332,7 +359,6 @@ if submit_btn and status:
 
     # --- B. 构建 DataFrame ---
     data_dict = {
-        # 传感器 (Key 保持中文)
         "进水量": [inflow],
         "厌氧池北溶解氧": [ana_do_n],
         "厌氧池南ORP": [ana_orp_s],
@@ -346,7 +372,6 @@ if submit_btn and status:
         "好氧池南PH": [aero_ph_s],
         "好氧池北PH": [aero_ph_n],
 
-        # 时间特征
         "month_sin": [month_sin], "Month_sin": [month_sin],
         "month_cos": [month_cos], "Month_cos": [month_cos],
         "day_sin": [day_sin], "Day_sin": [day_sin],
@@ -358,10 +383,8 @@ if submit_btn and status:
     input_df = pd.DataFrame(data_dict)
 
     try:
-        # 调用预测
         prediction = ensemble.predict(input_df)
 
-        # 1. 显示结果
         st.markdown(f"""
         <div class="result-box">
             <div style="color: #455a64; font-size: 1.1rem; font-weight: bold; font-family: 'Arial', sans-serif;">{t['res_title']}</div>
@@ -369,7 +392,6 @@ if submit_btn and status:
         </div>
         """, unsafe_allow_html=True)
 
-        # 2. 导出 CSV
         export_df = input_df.copy()
         export_df['Predicted_Aerobic_North_DO'] = prediction
         export_df = export_df.loc[:, ~export_df.columns.duplicated()]
